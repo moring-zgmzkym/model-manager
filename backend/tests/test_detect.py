@@ -112,9 +112,13 @@ def test_comfyui_video_detection(tmp_path):
     assert res.launch.port == 8189
     assert res.launch.health_path == "/system_stats"
     assert "start-comfyui.bat" in res.launch.command
+    assert res.launch.keep_running_on_exit is True
     cap = next(c for c in res.capabilities if c.type == "video_generation")
     assert cap.enabled and cap.binding["protocol"] == "comfyui"
     assert [a["id"] for a in cap.actions] == ["t2v", "i2v", "flf2v"]
+    assert [p["label"] for p in cap.actions[0]["presets"]] == ["快速 · 2 秒", "本地最高 · 实测", "官方最高 · 15 秒"]
+    assert cap.actions[0]["presets"][1]["values"]["width"] == 1152
+    assert cap.actions[0]["presets"][2]["values"]["length"] == 360
     fields = {f["name"] for f in cap.actions[2]["fields"]}
     assert {"first_frame", "last_frame"} <= fields
     assert "MiniMaxH3ImageToVideo" in str(cap.binding["workflow"])
@@ -135,6 +139,9 @@ def test_comfyui_image_detection(tmp_path):
     cap = next(c for c in res.capabilities if c.type == "image_generation")
     assert cap.enabled and cap.binding["protocol"] == "comfyui"
     assert [a["id"] for a in cap.actions] == ["t2i", "edit"]
+    assert [p["label"] for p in cap.actions[0]["presets"]] == ["1024 · 标准", "本地最高 · 2048×1152", "官方最高 · 2048×2048"]
+    assert cap.actions[0]["presets"][1]["values"]["width"] == 2048
+    assert cap.actions[0]["presets"][1]["values"]["height"] == 1152
     edit = cap.actions[1]
     assert edit["workflow"]["4"]["inputs"]["images"] == {"image_1": ["20", 0]}
     assert edit["workflow"]["5"]["inputs"]["latent_image"] == ["4", 2]
@@ -170,6 +177,7 @@ def test_ollama_detection(tmp_path):
     assert res.launch.port == 11434
     assert res.launch.health_path == "/v1/models"
     assert res.defaults["model"] == "qwen3.5:9b"
+    assert res.defaults["num_ctx"] == 8192
     chat = next(c for c in res.capabilities if c.type == "chat")
-    assert chat.enabled and chat.binding["protocol"] == "openai_chat"
+    assert chat.enabled and chat.binding["protocol"] == "ollama_chat"
 

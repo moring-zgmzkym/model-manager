@@ -141,6 +141,7 @@ export function TtsPanel({ model, ready }: { model: Model; ready: boolean }) {
   const run = async () => {
     if (!text.trim()) return toast("请输入要朗读的文字", "error");
     if (!ready) return toast("请先启动模型", "error");
+    if (sovits && !ref) return toast("GPT-SoVITS 需要先上传或选择一段参考音频", "error");
     setBusy(true);
     try {
       await api.post(`/api/models/${model.id}/tts`, sovits ? {
@@ -230,9 +231,10 @@ export function TtsPanel({ model, ready }: { model: Model; ready: boolean }) {
               {cloneCap && (<Field label="参考音频（声音克隆）"><AudioInput value={ref} onChange={setRef} /></Field>)}
             </>
           )}
-          <button className="btn primary lg" disabled={busy} onClick={run}>
+          <button className="btn primary lg" disabled={busy || (sovits && !ref)} onClick={run}>
             {busy ? <Loader2 size={17} className="spin" /> : <AudioLines size={17} />} {busy ? "合成中…" : "开始合成"}
           </button>
+          {sovits && !ref && <div className="faint small">GPT-SoVITS 是零样本克隆，必须先提供一段 3~10 秒的参考音频。</div>}
         </div>
         <div>
           <div className="section-head" style={{ marginBottom: 16 }}><h3 className="section-title">合成记录</h3></div>

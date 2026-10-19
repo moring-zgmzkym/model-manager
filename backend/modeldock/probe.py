@@ -27,7 +27,41 @@ VISION_NAME = re.compile(r"vl|vision|llava|omni|pixtral|gemma-?3|minicpm-?v|qwen
 AUDIO_NAME = re.compile(r"omni|audio|voice", re.I)
 
 
-async def probe(base_url: str, timeout: float = 4.0) -> ProbeResult:
+async def _ollama_show(client: httpx.AsyncClient, base: str, model_name: str,
+                     caps: list[Capability], res: ProbeResult) -> None:
+    """Ask Ollama what a model can do (vision / thinking / tools)."""
+    if not model_name:
+        return
+    try:
+        shown = await client.post(base + "/api/show", json={"model": model_name})
+    except Exception:
+        return
+    if shown.status_code != 200:
+        return
+    try:
+        info = shown.json()
+    except Exception:
+        return
+    abilities = [str(item).lower() for item in info.get("capabilities") or []]
+    if not abilities:
+        return
+    res.kinds.append("ollama")
+    # The generic /v1/models probe adds an OpenAI chat capability; Ollama has a better native path.
+    for item in caps:
+        if item.type == "chat" and item.binding.get("protocol") == "openai_chat":
+            item.binding = {**item.binding, "protocol": "ollama_chat"}
+    if "vision" in abilities:
+        caps.append(cap("vision", 0.95, f"Ollama 报告 {model_name} 支持视觉", source="runtime",
+                        binding={"protocol": "ollama_chat"}))
+    if "embedding" in abilities:
+        caps.append(cap("embedding", 0.9, f"Ollama 报告 {model_name} 支持向量", source="runtime"))
+    if "thinking" in abilities:
+        res.notes.append(f"{model_name} 支持思考模式。")
+    if "tools" in abilities:
+        res.notes.append(f"{model_name} 支持工具调用。")
+
+
+async def probe(base_url: str, timeout: float = 4.0, model_name: str = "") -> ProbeResult:
     base = base_url.rstrip("/")
     res = ProbeResult(reachable=False, base_url=base)
     caps: list[Capability] = []
@@ -58,6 +92,7 @@ async def probe(base_url: str, timeout: float = 4.0) -> ProbeResult:
                         caps.append(cap("audio_input", 0.45, f"服务中的模型名 {m} 暗示音频能力", source="runtime"))
                     if re.search(r"embed|bge|(^|[-_])e5|gte", m, re.I):
                         caps.append(cap("embedding", 0.6, f"服务中的模型名 {m}", source="runtime"))
+                await _ollama_show(client, base, model_name or (models[0] if models else ""), caps, res)
 
         r = await get("/openapi.json")
         if r is not None:

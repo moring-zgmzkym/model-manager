@@ -322,9 +322,11 @@ class ProcessManager:
         self._set(svc, "stopped")
         return svc
 
-    async def stop_all(self, managed_only: bool = True) -> None:
+    async def stop_all(self, managed_only: bool = True, skip_model_ids: Any = ()) -> None:
+        skip = set(skip_model_ids)
         await asyncio.gather(*(self.stop(k) for k, s in self.services.items()
-                               if s.status in ("running", "starting") and (s.proc or not managed_only)),
+                               if s.status in ("running", "starting") and (s.proc or not managed_only)
+                               and s.spec.model_id not in skip),
                              return_exceptions=True)
 
     # ------------------------------------------------------------------ monitor

@@ -286,6 +286,13 @@ export function ModelDetail() {
               <div className="faint small">如果端口上已有服务在运行（比如你手动运行了启动脚本），直接显示为运行中。</div>
             </div>
           </div>
+          <div className="row">
+            <Switch checked={L.keep_running_on_exit} onChange={(v) => setL({ keep_running_on_exit: v })} />
+            <div>
+              <div style={{ fontWeight: 560 }}>退出 ModelDock 时保持运行</div>
+              <div className="faint small">ComfyUI 这类可能被其他程序共用的服务建议打开，关闭管理器不会结束它。</div>
+            </div>
+          </div>
         </div>
       )}
 

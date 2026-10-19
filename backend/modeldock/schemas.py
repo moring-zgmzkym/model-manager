@@ -57,6 +57,8 @@ class LaunchConfig(BaseModel):
     startup_timeout: int = 600
     # When true the manager treats a server already listening on the port as "running".
     adopt_external: bool = True
+    # Keep this service alive when ModelDock exits (e.g. a ComfyUI shared with other tools).
+    keep_running_on_exit: bool = False
 
 
 class ModelConfig(BaseModel):

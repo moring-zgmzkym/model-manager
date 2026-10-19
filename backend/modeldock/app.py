@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, invoke, outputs, system
+from . import __version__, chatjobs, documents, invoke, outputs, system
 from .catalog import catalog_payload
 from .detect import detect, merge_caps
 from .paths import FRONTEND_DIST, PROJECT_DIR, data_dir
@@ -38,6 +38,7 @@ def python_default() -> str:
 
 
 pm = ProcessManager(python_default)
+chat_jobs = chatjobs.ChatJobManager()
 plugin_state: dict[str, Any] = {"detectors": [], "info": []}
 
 
@@ -110,7 +111,7 @@ async def on_running(svc: Service) -> None:
     if not m or svc.spec.key != m.id:
         return
     try:
-        res = await probe(m.base_url())
+        res = await probe(m.base_url(), model_name=m.defaults.get("model") or "")
     except Exception:
         return
     if res.reachable and res.capabilities and merge_runtime(m, res.capabilities):
@@ -136,8 +137,10 @@ async def lifespan(app: FastAPI):
     pm.start_monitor()
     psutil.cpu_percent(interval=None)
     yield
+    await chat_jobs.shutdown()
     if get_store().settings.stop_models_on_exit:
-        await pm.stop_all(managed_only=True)
+        keep = {m.id for m in get_store().list_models() if m.launch.keep_running_on_exit}
+        await pm.stop_all(managed_only=True, skip_model_ids=keep)
     await pm.shutdown()
 
 
@@ -274,7 +277,7 @@ async def rescan(model_id: str):
         notes += res.notes
     svc = pm.get(m.id)
     if svc and svc.status == "running" or m.adapter == "openai_remote":
-        pr = await probe(m.base_url())
+        pr = await probe(m.base_url(), model_name=m.defaults.get("model") or "")
         merge_runtime(m, pr.capabilities)
         notes += pr.notes
         if pr.served_models and not m.defaults.get("model"):
@@ -285,7 +288,7 @@ async def rescan(model_id: str):
 
 @app.post("/api/probe")
 async def probe_url(body: dict = Body(...)):
-    return await probe(body.get("url", ""))
+    return await probe(body.get("url", ""), model_name=body.get("model", ""))
 
 
 @app.post("/api/models/{model_id}/start")
@@ -413,8 +416,27 @@ async def omni_voices(model_id: str):
 @app.post("/api/models/{model_id}/chat")
 async def chat(model_id: str, payload: dict = Body(...)):
     m = must(model_id)
-    return StreamingResponse(invoke.chat_stream(m, payload), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    request_id = str(payload.get("request_id") or "") if isinstance(payload, dict) else ""
+    job = chat_jobs.create(m.id, request_id, lambda: invoke.chat_stream(m, payload))
+    return StreamingResponse(chat_jobs.stream(job), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                      "X-Chat-Job": job.id})
+
+
+@app.get("/api/chat/jobs/{job_id}")
+async def chat_job(job_id: str):
+    job = chat_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在或已过期")
+    return job.snapshot()
+
+
+@app.post("/api/chat/jobs/{job_id}/cancel")
+async def cancel_chat_job(job_id: str):
+    job = chat_jobs.cancel(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在或已过期")
+    return job.snapshot()
 
 
 @app.post("/api/models/{model_id}/image")
@@ -467,6 +489,17 @@ async def sovits_set(model_id: str, body: dict = Body(...)):
 
 
 # ---------------------------------------------------------------- files
+@app.post("/api/extract")
+async def extract_document(file: UploadFile = File(...)):
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(413, "文件太大（上限 20MB）")
+    try:
+        return documents.extract(data, file.filename or "file")
+    except documents.DocumentError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/api/uploads")
 async def upload(file: UploadFile = File(...), name: Optional[str] = Form(None)):
     data = await file.read()

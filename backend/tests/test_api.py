@@ -1,13 +1,16 @@
 """End to end: register a model whose launch command is the bundled mock
 server, start it through the API, call every capability, then stop it."""
 
+import asyncio
 import json
 import time
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 
 from conftest import free_port
+from modeldock import invoke
 
 
 @pytest.fixture
@@ -174,3 +177,32 @@ def test_probe_single_route_server(client, tmp_path):
     assert caps["image_generation"]["enabled"] and caps["image_edit"]["enabled"]
     assert caps["image_generation"]["source"] == "runtime"
     client.post(f"/api/models/{m['id']}/stop")
+
+
+def test_chat_job_keeps_generating_after_the_viewer_disconnects(client, tmp_path, monkeypatch):
+    async def fake(model, payload):
+        for i in range(3):
+            yield invoke.sse({"type": "delta", "text": str(i)})
+            await asyncio.sleep(0.1)
+        yield invoke.sse({"type": "done", "elapsed": 0.3, "usage": {"completion_tokens": 3}})
+
+    monkeypatch.setattr(invoke, "chat_stream", fake)
+    m = client.post("/api/models", json={
+        "name": "Slow Chat", "path": str(tmp_path),
+        "capabilities": [{"type": "chat", "binding": {"protocol": "openai_chat"}}],
+    }).json()
+    jid = "api-job-" + uuid.uuid4().hex
+    with client.stream("POST", f"/api/models/{m['id']}/chat",
+                       json={"messages": [{"role": "user", "content": "hi"}], "request_id": jid}) as r:
+        first = next(r.iter_lines())
+        assert first.startswith("data:")
+
+    snap = {}
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        snap = client.get(f"/api/chat/jobs/{jid}").json()
+        if snap["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert snap["status"] == "done"
+    assert snap["content"] == "012"

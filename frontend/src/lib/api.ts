@@ -49,6 +49,13 @@ export async function upload(file: Blob, name: string): Promise<{ id: string; pa
   return api.post("/api/uploads", fd);
 }
 
+/** Extract plain text from a document so it can be sent as chat context. */
+export async function extractDocument(file: File): Promise<{ name: string; text: string; chars: number; truncated: boolean }> {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  return api.post("/api/extract", fd);
+}
+
 /** POST and read a text/event-stream of JSON events. */
 export async function streamSSE(url: string, body: unknown, onEvent: (e: any) => void, signal?: AbortSignal) {
   const res = await fetch(url, {

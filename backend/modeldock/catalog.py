@@ -48,6 +48,7 @@ PROTOCOLS: dict[str, str] = {
     "gpt_sovits": "GPT-SoVITS api_v2 /tts",
     "comfyui": "ComfyUI 工作流 /prompt",
     "omni": "MiniMind-O 原生服务 /chat",
+    "ollama_chat": "Ollama 原生 /api/chat（图片 / 思考 / num_ctx）",
     "webui": "嵌入网页界面",
     "custom_http": "自定义 HTTP 模板",
 }

@@ -4,7 +4,7 @@
 
 - **一键启停**：不再手动运行启动脚本和停止脚本。ModelDock 管理整个进程树，实时显示加载日志，自动检测"就绪"，退出时可自动释放显存；你手动启动的服务也会被识别并接管。
 - **自动识别能力**：分析模型文件夹（`config.json`、diffusers 管线、GGUF、GPT-SoVITS 目录结构、服务脚本源码、README、组件目录），推断它能做什么、该怎么启动；模型启动后再探测其 API，补全/确认能力。每项能力都附带"识别依据"和置信度，可随时手动开关。
-- **统一工作台**：按能力自动生成操作界面——对话（含看图、语音输入、语音回答、思考过程）、文生图 / 图像编辑、语音合成 / 声音克隆（含 GPT-SoVITS 参考音频、常用音色、权重切换）、语音识别、文本向量、模型自带网页界面、自定义 HTTP 接口。
+- **统一工作台**：按能力自动生成操作界面——对话（含看图、语音输入、语音回答、可开关的思考过程）、文生图 / 图像编辑、语音合成 / 声音克隆（含 GPT-SoVITS 参考音频、常用音色、权重切换）、语音识别、文本向量、模型自带网页界面、自定义 HTTP 接口。对话在后台生成：切到运行日志或刷新页面不会中断，回来会自动恢复。
 - **可扩展**：`modeldock.json` 清单、`plugins/*.py` 插件、自定义 HTTP 模板三种方式接入新模型。
 - **多页面**：总览、模型库、模型详情、工作台、作品库、运行日志、设置；浅色 / 深色主题。
 
@@ -39,7 +39,7 @@ MODELDOCK_DATA=demo-data python run.py       # Windows: set MODELDOCK_DATA=demo-
 | --- | --- | --- | --- |
 | MiniMax-H3 | ComfyUI 视频模型 | 视频生成（文生视频 / 图生视频 / 首尾帧过渡） | 项目自带的 `start-comfyui.bat` |
 | MiniMind-O | MiniMind 全模态项目 | 文本对话、图像理解、语音输入、语音输出 | ModelDock 的 `omni_server.py`（项目自带 Python） |
-| qwen3.5 | Transformers 语言模型 | 文本对话、图像理解 | 同上 |
+| qwen3.5 | Ollama 服务 | 文本对话、图像理解 | 项目自带的 `start-ollama.bat`（11434） |
 | qwen-image-2.1 | ComfyUI 图像模型 | 文生图、图像编辑 / 元素分离 | 项目自带的 `start-comfyui.bat` |
 | GPT-SoVITS-v2pro-20250604 | GPT-SoVITS 语音 | 语音合成、声音克隆、原生训练界面 | 整合包自带 `runtime/python` + `api_v2.py` |
 
@@ -60,9 +60,15 @@ MODELDOCK_DATA=demo-data python run.py       # Windows: set MODELDOCK_DATA=demo-
 - **ComfyUI 项目**：识别 `start-comfyui.bat`、端口和 `models/` 里的权重名，自动生成内置工作流，通过 ComfyUI 的 `/prompt` 接口执行，结果自动进入作品库。
 - **MiniMax-H3**：视频面板提供文生视频、图生视频、首尾帧生视频；首尾帧会先上传到 ComfyUI 的 input 目录。
 - **qwen-image-2.1**：图像面板提供文生图与图像编辑 / 元素分离；编辑时参考图作为 `image_1` 送入文本编码器。
-- **Ollama**：包含 `Modelfile` 或 `start-ollama.bat` 的目录会被识别为 OpenAI 兼容服务（默认 11434），工作台直接对话。
+- **Ollama**：包含 `Modelfile` 或 `start-ollama.bat` 的目录会被识别为 Ollama 服务（默认 11434），对话走原生 `/api/chat`：每次请求显式带 `num_ctx`（当前 8192），支持图片、文件文本和思考流。模型运行时会通过 `/api/show` 自动探测视觉 / 思考 / 工具能力，支持视觉的模型会直接出现“图片”按钮。
+- **思考开关**：qwen3.5 这类推理模型默认会先输出思考链。输入框上方的“思考”按钮默认关闭，此时直接回答；打开后思考过程会折叠在“思考过程 · N 字”里，不会铺满气泡。思考也占用“最大输出长度”，长任务可适当调大。
 - **MiniMind-O**：不再嵌入 Gradio。ModelDock 自带 `omni_server.py`，复用项目 demo 的加载与推理代码，提供专用页面：文字 / 图片 / 录音输入，流式文字 + 语音回复，可直接选内置音色。
-- **子功能（actions）**：一个能力可以带多个子功能，各自有字段与工作流。工作台会按 `actions` 生成标签页和表单；工作流保存在能力的 `binding.workflow` 里，可在「模型详情 → 高级 → 能力 JSON」中调整，换权重后点一次「重新识别」重建。
+- **子功能（actions）**：一个能力可以带多个子功能，各自有字段与工作流。工作台会按 `actions` 生成标签页和表单；工作流保存在能力的 `binding.workflow` 里，可在「模型详情 → 高级 → 能力 JSON」中调整，换权重后点一次「重新识别」重建。相同 action 只显示一次。
+- **画质预设**：视频提供「快速 2 秒 / 本地最高（1152×640、22 帧）/ 官方最高（1344×768、15 秒）」；qwen-image 提供「1024 / 本地最高 2048×1152 / 官方最高 2048×2048」。8GB 的 RTX 4070 Laptop 实测 1344×768 会 OOM，所以本地最高按实测稳定的 1152×640 档；2K 需要以 `start-comfyui-2k.bat` 启动。预设会高亮当前选择，并和表单内容一起保存，刷新后恢复。
+- **停止与退出**：停止 ComfyUI 前会弹窗确认；「启动配置」里的「退出 ModelDock 时保持运行」默认对 ComfyUI 打开，关闭管理器不会结束它。
+- **GPT-SoVITS**：推理约需 2~3GB 显存；与 ComfyUI 视频模型同时运行会 CUDA OOM，先停掉视频服务再合成语音。已实测参考音频克隆：3~10 秒参考音频即可合成 32kHz WAV。
+- **图片 / 文件输入**：对话输入框可以添加图片和文档。文档（txt/md/csv/json/代码/PDF/DOCX）会先由 `/api/extract` 转成文本再作为对话上下文；单文件 20MB、20 万字符上限。未发送的文字会保存在浏览器本地，刷新后自动恢复。
+- **对话任务**：每次发送都会在后端创建一个独立任务（`chatjobs.py`）。浏览器只是查看器：切到运行日志、切换页面或刷新都不会取消生成；回到工作台会把已经生成的内容补回气泡。只有点停止按钮才会真正取消。
 
 ## 扩展
 
@@ -111,6 +117,7 @@ backend/modeldock/     FastAPI 后端
   comfyui.py           ComfyUI 工作流客户端（提交 / 轮询 / 取回生成物）
   process.py           进程管理、就绪检测、日志
   invoke.py            统一调用代理（OpenAI 兼容 / GPT-SoVITS / ComfyUI / 自定义 HTTP）
+  chatjobs.py          对话后台任务（切页/刷新继续生成，快照恢复）
 backend/servers/       内置推理服务与模拟服务（omni_server.py：MiniMind-O 文字/图片/语音）
 frontend/              React + TypeScript 界面
 plugins/               识别插件

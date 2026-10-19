@@ -168,8 +168,9 @@ export function Field({ label, hint, children }: { label: ReactNode; hint?: Reac
   );
 }
 
-export function Slider({ label, value, min, max, step, onChange, format }: {
-  label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; format?: (v: number) => string;
+export function Slider({ label, value, min, max, step, onChange, format, hint }: {
+  label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void;
+  format?: (v: number) => string; hint?: ReactNode;
 }) {
   return (
     <div className="field">
@@ -178,6 +179,7 @@ export function Slider({ label, value, min, max, step, onChange, format }: {
         <span className="mono faint tnum" style={{ fontWeight: 500 }}>{format ? format(value) : value}</span>
       </span>
       <input className="range" type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      {hint ? <span className="field-hint">{hint}</span> : null}
     </div>
   );
 }

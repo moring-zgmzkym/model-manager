@@ -31,13 +31,35 @@ function loadMsgs(id: string): Msg[] {
   }
 }
 
+function loadSession(id: string): Msg[] {
+  try {
+    const raw = sessionStorage.getItem("md-omni-session-" + id);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadDraft(id: string): { text?: string; image?: string; audioIn?: string; voice?: string } {
+  try {
+    return JSON.parse(sessionStorage.getItem("md-omni-draft-" + id) || "{}");
+  } catch {
+    return {};
+  }
+}
+
 export function OmniPanel({ model, ready }: { model: Model; ready: boolean }) {
   const { toast } = useStore();
-  const [msgs, setMsgs] = useState<Msg[]>(() => loadMsgs(model.id));
-  const [text, setText] = useState("");
-  const [image, setImage] = useState<string>("");
-  const [audioIn, setAudioIn] = useState<string>("");
-  const [voice, setVoice] = useState("default");
+  const initialDraft = loadDraft(model.id);
+  const [msgs, setMsgs] = useState<Msg[]>(() => {
+    const session = loadSession(model.id);
+    return session.length ? session : loadMsgs(model.id);
+  });
+  const [text, setText] = useState(initialDraft.text || "");
+  const [image, setImage] = useState<string>(initialDraft.image || "");
+  const [audioIn, setAudioIn] = useState<string>(initialDraft.audioIn || "");
+  const [voice, setVoice] = useState(initialDraft.voice || "default");
   const [voices, setVoices] = useState<string[]>(["default"]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -50,7 +72,25 @@ export function OmniPanel({ model, ready }: { model: Model; ready: boolean }) {
   useEffect(() => {
     const slim = msgs.slice(-40).map((m) => ({ ...m, image: undefined, audioIn: undefined, audioOut: undefined }));
     localStorage.setItem("md-omni-" + model.id, JSON.stringify(slim));
+    try {
+      sessionStorage.setItem("md-omni-session-" + model.id, JSON.stringify(msgs.slice(-20)));
+    } catch {
+      try {
+        const textOnly = msgs.slice(-20).map((m) => ({ ...m, image: undefined, audioIn: undefined, audioOut: undefined }));
+        sessionStorage.setItem("md-omni-session-" + model.id, JSON.stringify(textOnly));
+      } catch {
+        /* ignore quota errors */
+      }
+    }
   }, [msgs, model.id]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("md-omni-draft-" + model.id, JSON.stringify({ text, image, audioIn, voice }));
+    } catch {
+      /* ignore quota errors */
+    }
+  }, [text, image, audioIn, voice, model.id]);
 
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: busy ? "auto" : "smooth" });

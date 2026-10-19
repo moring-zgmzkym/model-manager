@@ -156,6 +156,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const stop = useCallback(
     async (id: string) => {
+      const target = models.find((m) => m.id === id);
+      if (target && (target.adapter === "comfyui" || target.launch.keep_running_on_exit)) {
+        const ok = window.confirm(
+          "停止「" + target.name + "」会中断正在运行的任务（ComfyUI 可能被其他程序共用）。确定停止吗？",
+        );
+        if (!ok) return;
+      }
       setModels((list) => list.map((m) => (m.id === id ? { ...m, runtime: { ...m.runtime, status: "stopping" } } : m)));
       try {
         const rt = await api.post<Runtime>(`/api/models/${id}/stop`);
@@ -164,7 +171,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         toast(e.message, "error");
       }
     },
-    [toast],
+    [models, toast],
   );
 
   const onLog = useCallback((fn: LogListener) => {

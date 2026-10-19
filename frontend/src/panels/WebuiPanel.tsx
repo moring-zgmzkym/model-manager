@@ -6,7 +6,7 @@ import { useStore } from "../lib/store";
 import type { Model } from "../lib/types";
 
 export function WebuiPanel({ model }: { model: Model }) {
-  const { refresh, toast, start } = useStore();
+  const { refresh, toast, start, stop } = useStore();
   const cap = model.capabilities.find((c) => c.type === "webui" && c.enabled);
   const [nonce, setNonce] = useState(0);
   if (!cap) return null;
@@ -18,7 +18,7 @@ export function WebuiPanel({ model }: { model: Model }) {
     try {
       if (sub) await api.post(`/api/models/${model.id}/services/webui/${action}`);
       else if (action === "start") await start(model.id);
-      else await api.post(`/api/models/${model.id}/stop`);
+      else await stop(model.id);
       await refresh();
     } catch (e: any) {
       toast(e.message, "error");

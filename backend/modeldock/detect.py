@@ -417,6 +417,46 @@ def _num_field(name: str, label: str, default: Any, **extra: Any) -> dict[str, A
     return {"name": name, "label": label, "type": "number", "default": default, **extra}
 
 
+VIDEO_HINTS = re.compile(
+    r"minimax_?h3|fl2v|wan\d|hunyuan_?video|hunyuanvideo|ltx_?video|cogvideo|mochi|cosmos|stable_?video|\bsvd\b|seedance",
+    re.I,
+)
+
+
+def _video_presets() -> list[dict[str, Any]]:
+    return [
+        {"id": "fast", "label": "快速 · 2 秒",
+         "values": {"width": 864, "height": 480, "length": 49, "steps": 8}},
+        {"id": "local", "label": "本地最高 · 实测",
+         "values": {"width": 1152, "height": 640, "length": 22, "steps": 8},
+         "note": "RTX 4070 Laptop 8GB 实测稳定档；1344×768 已验证会 OOM，不要在本机直出"},
+        {"id": "official", "label": "官方最高 · 15 秒",
+         "values": {"width": 1344, "height": 768, "length": 360, "steps": 8},
+         "note": "官方开放权重上限（约 1MP、24fps）；8GB 显存会 OOM，仅作参考"},
+    ]
+
+
+def _qwen_image_presets() -> list[dict[str, Any]]:
+    return [
+        {"id": "standard", "label": "1024 · 标准",
+         "values": {"width": 1024, "height": 1024, "resolution": 1024, "steps": 25}},
+        {"id": "local", "label": "本地最高 · 2048×1152",
+         "values": {"width": 2048, "height": 1152, "resolution": 2048, "steps": 30},
+         "note": "你的历史产物已证明这档可用；需以 start-comfyui-2k.bat 启动"},
+        {"id": "official", "label": "官方最高 · 2048×2048",
+         "values": {"width": 2048, "height": 2048, "resolution": 2048, "steps": 30},
+         "note": "官方 2048 质量档；8GB 显存需 2K 启动脚本，可能很慢或 OOM"},
+    ]
+
+
+def _qwen_edit_presets() -> list[dict[str, Any]]:
+    return [
+        {"id": "standard", "label": "1024 · 标准", "values": {"resolution": 1024, "steps": 25}},
+        {"id": "local", "label": "2048 · 本地最高", "values": {"resolution": 2048, "steps": 30},
+         "note": "需以 start-comfyui-2k.bat 启动；编辑结果跟随参考图比例"},
+    ]
+
+
 def _minimax_workflow(models: dict[str, list[Path]]) -> Optional[dict[str, Any]]:
     unets = models.get("unet", []) + models.get("diffusion_models", [])
     unet = _best_unet(unets)
@@ -525,7 +565,8 @@ def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
     video_graph = _minimax_workflow(models) if ("minimax_h3" in names or "fl2va" in names) else None
     image_graph = _qwen_workflow(models) if ("qwen-image" in names or "qwen_image" in names) else None
     edit_graph = _qwen_edit_workflow(models) if image_graph else None
-    if not video_graph and not image_graph:
+    is_video = bool(VIDEO_HINTS.search(names))
+    if not video_graph and not image_graph and not is_video:
         return None
 
     scripts = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in (".bat", ".cmd", ".sh")] \
@@ -547,7 +588,7 @@ def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
 
     d = Draft(adapter="comfyui", description="ComfyUI 工作流项目", use_hints=False)
     d.launch = LaunchConfig(command=command, cwd=str(root), port=port, health_path="/system_stats",
-                            startup_timeout=900,
+                            startup_timeout=900, keep_running_on_exit=True,
                             stop_command=script_command(root, stop.relative_to(root)) if stop else "")
     d.caps.append(cap("webui", 0.9, "发现 ComfyUI 网页界面",
                       binding={"protocol": "webui", "url": f"http://127.0.0.1:{port}"}))
@@ -563,13 +604,16 @@ def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
     if video_graph:
         actions = [
             {"id": "t2v", "label": "文生视频", "description": "只给文字描述生成视频",
-             "fields": base_fields, "defaults": {"width": 864, "height": 480, "length": 49}},
+             "fields": base_fields, "presets": _video_presets(),
+             "defaults": {"width": 864, "height": 480, "length": 49}},
             {"id": "i2v", "label": "图生视频", "description": "以一张图作为首帧生成视频",
              "fields": base_fields + [{"name": "first_frame", "label": "首帧图片", "type": "image"}],
+             "presets": _video_presets(),
              "defaults": {"width": 864, "height": 480, "length": 49}},
             {"id": "flf2v", "label": "首尾帧生视频", "description": "给定首帧与尾帧，生成中间的过渡视频",
              "fields": base_fields + [{"name": "first_frame", "label": "首帧图片", "type": "image"},
                                       {"name": "last_frame", "label": "尾帧图片", "type": "image"}],
+             "presets": _video_presets(),
              "defaults": {"width": 864, "height": 480, "length": 121}},
         ]
         d.caps.append(cap("video_generation", 0.95, "发现 MiniMax-H3 视频权重与首尾帧节点",
@@ -588,7 +632,8 @@ def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
                  _num_field("steps", "采样步数", 25),
                  _num_field("cfg", "CFG", 1.0),
                  _num_field("seed", "随机种子", -1),
-             ]},
+             ],
+             "presets": _qwen_image_presets()},
         ]
         if edit_graph:
             actions.append({
@@ -604,6 +649,7 @@ def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
                     _num_field("cfg", "CFG", 1.0),
                     _num_field("seed", "随机种子", -1),
                 ],
+                "presets": _qwen_edit_presets(),
                 "workflow": edit_graph,
             })
         d.caps.append(cap("image_generation", 0.9, "发现 Qwen-Image 权重",
@@ -614,6 +660,15 @@ def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
                           binding={"protocol": "comfyui", "base_url": f"http://127.0.0.1:{port}",
                                    "workflow": edit_graph or image_graph, "timeout": 1800},
                           actions=[a for a in actions if a["id"] == "edit"] or actions[:1]))
+        d.notes.append("2048×2048（2K）需要以 start-comfyui-2k.bat 启动；普通启动模式在 2K 下可能崩溃。")
+    elif is_video and not video_graph:
+        sample = next(iter(sorted(p.name for files in models.values() for p in files)), "")
+        v = cap("video_generation", 0.7, f"发现视频权重 {sample}",
+                binding={"protocol": "comfyui", "base_url": f"http://127.0.0.1:{port}"})
+        v.enabled = False
+        v.evidence.append("尚未内置该视频家族的工作流：可在能力 JSON 里补充 binding.workflow 后启用")
+        d.caps.append(v)
+        d.notes.append("识别到视频模型，但 ModelDock 还没有它的内置工作流；可以先配置工作流，或直接用原生界面。")
     d.notes.append(f"ComfyUI 目录：{comfy}")
     d.notes.append("工作台通过 ComfyUI 的 /prompt 接口提交工作流；首次生成需要加载模型，可能较慢。")
     return d
@@ -628,10 +683,15 @@ def detect_ollama(sc: Scan, root: Path) -> Optional[Draft]:
         return None
 
     served = ""
+    num_ctx = 0
     if modelfile:
-        m = re.search(r"^\s*FROM\s+(\S+)", read_text(root / modelfile, 20_000), re.M | re.I)
+        text = read_text(root / modelfile, 20_000)
+        m = re.search(r"^\s*FROM\s+(\S+)", text, re.M | re.I)
         if m:
             served = m.group(1)
+        m = re.search(r"^\s*PARAMETER\s+num_ctx\s+(\d+)", text, re.M | re.I)
+        if m:
+            num_ctx = int(m.group(1))
     port = 11434
     command = ""
     if bat is not None:
@@ -647,13 +707,17 @@ def detect_ollama(sc: Scan, root: Path) -> Optional[Draft]:
     d = Draft(adapter="ollama", description="Ollama 本地模型服务", use_hints=False)
     d.launch = LaunchConfig(command=command, cwd=str(root), port=port, health_path="/v1/models",
                             startup_timeout=300)
-    d.caps.append(cap("chat", 0.95, "检测到 Ollama 模型目录", binding={"protocol": "openai_chat"}))
+    d.caps.append(cap("chat", 0.95, "检测到 Ollama 模型目录", binding={"protocol": "ollama_chat"}))
     if served and re.search(r"embed|bge|gte", served, re.I):
         d.caps.append(cap("embedding", 0.9, f"Ollama 模型 {served} 疑似向量模型",
                           binding={"protocol": "openai_embeddings"}))
     if served:
         d.defaults["model"] = served
-    d.notes.append("ModelDock 调用 Ollama 的 OpenAI 兼容接口（/v1/chat/completions）。")
+    if num_ctx:
+        d.defaults["num_ctx"] = num_ctx
+    d.notes.append("ModelDock 对话走 Ollama 原生 /api/chat，每次请求显式携带 num_ctx。")
+    if num_ctx:
+        d.notes.append(f"上下文长度 {num_ctx} tokens（来自 Modelfile 的 num_ctx）。")
     if served:
         d.notes.append(f"模型名：{served}")
     return d
@@ -686,7 +750,7 @@ def detect_gpt_sovits(sc: Scan, root: Path) -> Optional[Draft]:
     cmd = f"{pyref} {api_name} -a {{host}} -p {{port}}"
     if api_name == "api_v2.py" and (root / cfg).exists():
         cmd += f" -c {cfg}"
-    d.launch = LaunchConfig(command=cmd, cwd=str(root), port=9880, health_path="/docs", startup_timeout=300)
+    d.launch = LaunchConfig(command=cmd, cwd=str(root), port=9880, health_path="/docs", startup_timeout=600)
     if py:
         d.notes.append(f"使用整合包自带的 Python：{py}")
     binding = {"protocol": "gpt_sovits", "api": "v2" if api_name == "api_v2.py" else "v1"}
@@ -704,6 +768,7 @@ def detect_gpt_sovits(sc: Scan, root: Path) -> Optional[Draft]:
     weights = sc.find_dirs(r"^(GPT|SoVITS)_weights")
     if weights:
         d.notes.append("可在工作台中切换已训练的音色权重：" + "、".join(w.name for w in weights[:4]))
+    d.notes.append("推理约需 2~3GB 显存；与 ComfyUI 视频模型同时运行可能 CUDA OOM。")
     return d
 
 
@@ -743,7 +808,15 @@ def detect_gguf(sc: Scan, root: Path) -> Optional[Draft]:
         return None
     main = max(mains, key=lambda f: (root / f).stat().st_size if (root / f).exists() else 0)
     d = Draft(adapter="gguf", description=f"GGUF 量化模型 {main.name}")
-    d.caps.append(cap("chat", 0.9, f"发现 GGUF 权重 {main.name}"))
+    if VIDEO_HINTS.search(main.name):
+        v = cap("video_generation", 0.8, f"发现视频 GGUF 权重 {main.name}", binding={"protocol": "custom_http"})
+        v.enabled = False
+        d.caps.append(v)
+        d.notes.append("这是视频 GGUF：内置聊天服务不能运行它，请配置 ComfyUI / llama.cpp 的视频工作流。")
+        d.launch = LaunchConfig(cwd=str(root))
+        return d
+    else:
+        d.caps.append(cap("chat", 0.9, f"发现 GGUF 权重 {main.name}"))
     extra = ""
     if mmproj:
         d.caps.append(cap("vision", 0.85, f"发现视觉投影 {mmproj[0].name}"))
@@ -783,6 +856,11 @@ def analyze_hf_config(cfg: dict[str, Any]) -> tuple[list[Capability], str]:
         caps.append(cap("audio_input", 0.85, "config.json 含 audio_config"))
     if cfg.get("talker_config") or cfg.get("token2wav_config") or cfg.get("enable_audio_output"):
         caps.append(cap("speech_output", 0.85, "config.json 含 talker / token2wav 语音解码器"))
+    if re.search(r"video|wan|hunyuan_?video|cogvideo|ltx|mochi|cosmos|stable_?video|\bsvd\b", sig):
+        v = cap("video_generation", 0.72, f"视频架构 {label}", binding={"protocol": "custom_http"})
+        v.enabled = False
+        v.evidence.append("ModelDock 内置服务暂不支持视频推理，请配置启动命令与接口")
+        caps.append(v)
     return caps, label
 
 

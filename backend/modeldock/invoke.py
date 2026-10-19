@@ -126,6 +126,100 @@ def sse(event: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
 
 
+def _strip_data_url(value: str) -> str:
+    if not value:
+        return ""
+    return value.split(",", 1)[-1] if value.startswith("data:") else value
+
+
+def build_ollama_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ollama native messages: images are raw base64, not image_url parts."""
+    out: list[dict[str, Any]] = []
+    if payload.get("system"):
+        out.append({"role": "system", "content": payload["system"]})
+    for message in payload.get("messages") or []:
+        item = {"role": message.get("role", "user"), "content": message.get("content") or ""}
+        images = [_strip_data_url(img) for img in (message.get("images") or []) if img]
+        if images:
+            item["images"] = images
+        out.append(item)
+    return out
+
+
+def _ollama_error_message(text: str, num_ctx: int) -> str:
+    message = text
+    try:
+        data = json.loads(text)
+        err = data.get("error")
+        if isinstance(err, dict):
+            message = str(err.get("message") or message)
+        elif err:
+            message = str(err)
+    except Exception:
+        pass
+    match = re.search(r"request \((\d+) tokens\) exceeds.*?\((\d+) tokens\)", message)
+    if match:
+        return (f"上下文超出：本次请求约 {match.group(1)} tokens，模型上下文只有 {match.group(2)}。"
+                "可以清空对话、减少附件，或提高模型的 num_ctx。")
+    if "exceeds the available context size" in message:
+        return f"上下文超出模型上限（当前 num_ctx={num_ctx}）。请清空对话、减少附件，或提高 num_ctx。"
+    return f"对话请求失败：{message[:300]}"
+
+
+async def ollama_chat_stream(model: ModelConfig, cap: Capability,
+                             payload: dict[str, Any]) -> AsyncIterator[bytes]:
+    """Ollama /api/chat: explicit num_ctx, native image array and thinking stream."""
+    base = base_of(model, cap)
+    num_ctx = int(cap.binding.get("num_ctx") or model.defaults.get("num_ctx") or 8192)
+    options: dict[str, Any] = {"num_ctx": num_ctx}
+    for key in ("temperature", "top_p", "seed"):
+        if payload.get(key) is not None:
+            options[key] = payload[key]
+    if payload.get("max_tokens"):
+        options["num_predict"] = int(payload["max_tokens"])
+    body = {
+        "model": served_name(model, payload),
+        "messages": build_ollama_messages(payload),
+        "stream": True,
+        "options": options,
+    }
+    if "think" in payload:
+        think = payload.get("think")
+        if isinstance(think, str):
+            think = think.lower() in ("1", "true", "yes", "on")
+        body["think"] = bool(think)
+    started = time.time()
+    async with client() as c:
+        try:
+            async with c.stream("POST", base + "/api/chat", json=body) as r:
+                if r.status_code >= 400:
+                    detail = (await r.aread()).decode("utf-8", errors="ignore")
+                    yield sse({"type": "error", "message": _ollama_error_message(detail, num_ctx)})
+                    return
+                async for line in r.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("error"):
+                        yield sse({"type": "error", "message": str(data["error"])})
+                        continue
+                    message = data.get("message") or {}
+                    if message.get("thinking"):
+                        yield sse({"type": "reasoning", "text": message["thinking"]})
+                    if message.get("content"):
+                        yield sse({"type": "delta", "text": message["content"]})
+                    if data.get("done"):
+                        usage = {"prompt_tokens": data.get("prompt_eval_count"),
+                                 "completion_tokens": data.get("eval_count")}
+                        yield sse({"type": "done", "elapsed": round(time.time() - started, 2), "usage": usage})
+        except httpx.HTTPError as exc:
+            yield sse({"type": "error",
+                       "message": f"无法连接 Ollama {base}：{exc.__class__.__name__}。请确认服务已启动。"})
+
+
 async def chat_stream(model: ModelConfig, payload: dict[str, Any]) -> AsyncIterator[bytes]:
     cap = find_cap(model, ("chat", "vision", "audio_input", "speech_output"))
     if not cap:
@@ -139,6 +233,10 @@ async def chat_stream(model: ModelConfig, payload: dict[str, Any]) -> AsyncItera
         except InvokeError as exc:
             yield sse({"type": "error", "message": str(exc)})
         yield sse({"type": "done"})
+        return
+    if protocol == "ollama_chat":
+        async for event in ollama_chat_stream(model, cap, payload):
+            yield event
         return
 
     base = base_of(model, cap)

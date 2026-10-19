@@ -33,6 +33,13 @@ export interface ActionField {
   accept?: string;
 }
 
+export interface ActionPreset {
+  id: string;
+  label: string;
+  values: Record<string, any>;
+  note?: string;
+}
+
 /** A sub-feature of one capability, e.g. text-to-video vs first/last-frame. */
 export interface ActionSpec {
   id: string;
@@ -40,6 +47,7 @@ export interface ActionSpec {
   description?: string;
   fields?: ActionField[];
   defaults?: Record<string, any>;
+  presets?: ActionPreset[];
 }
 
 export interface Capability {
@@ -65,6 +73,7 @@ export interface LaunchConfig {
   health_path: string;
   startup_timeout: number;
   adopt_external: boolean;
+  keep_running_on_exit: boolean;
 }
 
 export interface Runtime {

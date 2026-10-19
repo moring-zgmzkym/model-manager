@@ -21,16 +21,31 @@ interface Props {
 
 function pairsFor(model: Model, capTypes: string[]): Pair[] {
   const out: Pair[] = [];
+  const seen = new Set<string>();
   for (const cap of model.capabilities) {
     if (!cap.enabled || !capTypes.includes(cap.type)) continue;
     const actions = cap.actions || [];
-    if (actions.length) {
-      for (const action of actions) out.push({ cap, action });
-    } else {
-      out.push({ cap, action: { id: "", label: cap.label || cap.type, fields: [] } });
+    const candidates = actions.length
+      ? actions
+      : [{ id: "", label: cap.label || cap.type, fields: [] } as ActionSpec];
+    for (const action of candidates) {
+      // image_generation and image_edit can expose the same "edit" action; show it once.
+      const key = action.id || cap.type + ":" + (action.label || cap.label || cap.type);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ cap, action });
     }
   }
   return out;
+}
+
+function loadActionState(modelId: string, actionKey: string): { values?: Record<string, any>; preset?: string } | null {
+  try {
+    const raw = localStorage.getItem("md-action-" + modelId + ":" + actionKey);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 function defaultsOf(pair: Pair | undefined): Record<string, any> {
@@ -51,15 +66,30 @@ export function ActionPanel({ model, ready, capTypes, endpoint, kind }: Props) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<OutputItem[]>([]);
   const [history, setHistory] = useState<OutputItem[]>([]);
+  const [presetNote, setPresetNote] = useState("");
+  const [activePreset, setActivePreset] = useState("");
 
   const actionKey = pair ? pair.cap.type + ":" + pair.action.id : "";
 
   useEffect(() => {
-    setValues(defaultsOf(pair));
+    const saved = loadActionState(model.id, actionKey);
+    const presets = pair?.action.presets || [];
+    const savedPreset = saved?.preset && presets.some((p) => p.id === saved.preset) ? saved.preset : "";
+    setValues(saved?.values ? { ...defaultsOf(pair), ...saved.values } : defaultsOf(pair));
+    setActivePreset(savedPreset);
+    setPresetNote(savedPreset ? (presets.find((p) => p.id === savedPreset)?.note || "") : "");
     setPreviews({});
     setResult([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actionKey]);
+  }, [actionKey, model.id]);
+
+  const persist = (nextValues: Record<string, any>, preset: string) => {
+    try {
+      localStorage.setItem("md-action-" + model.id + ":" + actionKey, JSON.stringify({ values: nextValues, preset }));
+    } catch {
+      /* ignore quota errors */
+    }
+  };
 
   const load = () =>
     api.get<OutputItem[]>("/api/outputs?kind=" + kind + "&model_id=" + model.id + "&limit=40")
@@ -80,7 +110,25 @@ export function ActionPanel({ model, ready, capTypes, endpoint, kind }: Props) {
 
   const fields = pair.action.fields || [];
 
-  const setValue = (name: string, value: any) => setValues((v) => ({ ...v, [name]: value }));
+  const setValue = (name: string, value: any) => {
+    setValues((v) => {
+      const next = { ...v, [name]: value };
+      persist(next, "");
+      return next;
+    });
+    setActivePreset("");
+    setPresetNote("");
+  };
+
+  const applyPreset = (preset: NonNullable<ActionSpec["presets"]>[number]) => {
+    setValues((v) => {
+      const next = { ...v, ...preset.values };
+      persist(next, preset.id);
+      return next;
+    });
+    setActivePreset(preset.id);
+    setPresetNote(preset.note || "");
+  };
 
   const pickImage = async (field: ActionField, file?: File) => {
     if (!file) return;
@@ -156,6 +204,30 @@ export function ActionPanel({ model, ready, capTypes, endpoint, kind }: Props) {
             <strong>{pair.action.label}</strong>
             {pair.action.description && <span className="faint small">{pair.action.description}</span>}
           </div>
+          {(pair.action.presets || []).length > 0 && (
+            <div className="stack" style={{ gap: 8 }}>
+              <div className="row" style={{ gap: 10 }}>
+                <div className="field-label">画质预设</div>
+                <span className={"chip " + (activePreset ? "selected" : "outline")} style={{ height: 22, fontSize: 11 }}>
+                  {activePreset
+                    ? "已选：" + ((pair.action.presets || []).find((p) => p.id === activePreset)?.label || activePreset)
+                    : "当前：自定义"}
+                </span>
+              </div>
+              <div className="row wrap" style={{ gap: 6 }}>
+                {(pair.action.presets || []).map((preset) => (
+                  <button
+                    key={preset.id}
+                    className={"chip clickable " + (activePreset === preset.id ? "selected" : "outline")}
+                    onClick={() => applyPreset(preset)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {presetNote && <div className="faint small">{presetNote}</div>}
+            </div>
+          )}
           {fields.map((field) => (
             <Field key={field.name} label={field.label || field.name} hint={field.help}>
               {field.type === "image" ? (
