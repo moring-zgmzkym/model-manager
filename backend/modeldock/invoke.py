@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 
+from . import comfyui
 from .outputs import resolve_upload, save_output
 from .schemas import Capability, ModelConfig
 
@@ -243,6 +244,11 @@ async def image_generate(model: ModelConfig, payload: dict[str, Any]) -> dict[st
         raise InvokeError("该模型没有启用图像生成能力")
     if cap.binding.get("protocol") == "custom_http":
         return await custom_call(model, cap, payload)
+    if cap.binding.get("protocol") == "comfyui":
+        try:
+            return await comfyui.run(model, cap, payload)
+        except comfyui.ComfyError as exc:
+            raise InvokeError(str(exc), exc.status) from exc
     base = base_of(model, cap)
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
@@ -280,6 +286,72 @@ async def image_generate(model: ModelConfig, payload: dict[str, Any]) -> dict[st
                                        capability=cap.type, ext=".png", prompt=prompt,
                                        meta={"size": size, **params, "revised_prompt": item.get("revised_prompt")}))
     return {"outputs": outputs, "elapsed": round(time.time() - started, 2)}
+
+
+# ======================================================================= omni (MiniMind-O)
+async def omni_chat_stream(model: ModelConfig, cap: Capability, payload: dict[str, Any]) -> AsyncIterator[bytes]:
+    """Proxy the local omni_server.py SSE stream (delta / asr / audio / done)."""
+    base = base_of(model, cap)
+    body = {
+        "text": payload.get("text") or "",
+        "image_b64": payload.get("image") or "",
+        "audio_b64": payload.get("audio") or "",
+        "voice": payload.get("voice") or "default",
+        "history": payload.get("history") or [],
+        "temperature": payload.get("temperature", 0.7),
+        "max_tokens": payload.get("max_tokens", 512),
+    }
+    async with client() as c:
+        try:
+            async with c.stream("POST", base + "/chat", json=body) as r:
+                if r.status_code >= 400:
+                    detail = (await r.aread()).decode("utf-8", errors="ignore")
+                    yield sse({"type": "error", "message": f"Omni 服务返回 {r.status_code}：{detail[:300]}"})
+                    return
+                async for chunk in r.aiter_raw():
+                    if chunk:
+                        yield chunk
+        except httpx.HTTPError as exc:
+            yield sse({"type": "error",
+                       "message": f"无法连接 Omni 服务 {base}：{exc.__class__.__name__}。请确认模型已启动。"})
+
+
+async def omni_voices(model: ModelConfig) -> dict[str, Any]:
+    cap = find_cap(model, ("chat",))
+    if not cap or cap.binding.get("protocol") != "omni":
+        raise InvokeError("该模型没有启用 Omni 对话")
+    base = base_of(model, cap)
+    async with client() as c:
+        try:
+            r = await c.get(base + "/voices")
+        except httpx.HTTPError as exc:
+            raise InvokeError(f"无法连接 Omni 服务 {base}：{exc.__class__.__name__}", 502) from exc
+        await raise_for(r, "获取音色列表")
+        return r.json()
+
+
+# ======================================================================= video
+async def video_generate(model: ModelConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    cap = find_cap(model, ("video_generation",))
+    if not cap:
+        raise InvokeError("该模型没有启用视频生成能力")
+    protocol = cap.binding.get("protocol", "comfyui")
+    if protocol != "comfyui":
+        raise InvokeError(f"暂不支持的视频协议：{protocol}")
+    try:
+        return await comfyui.run(model, cap, payload)
+    except comfyui.ComfyError as exc:
+        raise InvokeError(str(exc), exc.status) from exc
+
+
+async def video_interrupt(model: ModelConfig) -> dict[str, Any]:
+    cap = find_cap(model, ("video_generation", "image_generation"))
+    if not cap or cap.binding.get("protocol") != "comfyui":
+        raise InvokeError("该模型没有可中断的 ComfyUI 任务")
+    try:
+        return await comfyui.interrupt(model, cap)
+    except comfyui.ComfyError as exc:
+        raise InvokeError(str(exc), exc.status) from exc
 
 
 # ======================================================================= speech

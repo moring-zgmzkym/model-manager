@@ -1,6 +1,6 @@
 import {
-  AudioLines, Boxes, Code2, Eye, FileAudio, Globe, ImagePlus, Images, Loader2, MessageSquare, Mic, Power,
-  Sparkles, Speech, Wand2, X, CheckCircle2, AlertCircle, Info, Binary,
+  AudioLines, Boxes, Clapperboard, Code2, Eye, FileAudio, Film, Globe, ImagePlus, Images, Loader2,
+  MessageSquare, Mic, Power, Sparkles, Speech, Wand2, X, CheckCircle2, AlertCircle, Info, Binary,
 } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { initials, modelColor } from "../lib/format";
@@ -17,6 +17,7 @@ export const CAP_ICONS: Record<string, typeof MessageSquare> = {
   voice_clone: Wand2,
   image_generation: Images,
   image_edit: ImagePlus,
+  video_generation: Clapperboard,
   embedding: Binary,
   webui: Globe,
   custom: Code2,
@@ -25,6 +26,7 @@ export const CAP_ICONS: Record<string, typeof MessageSquare> = {
 export const PANEL_ICONS: Record<string, typeof MessageSquare> = {
   chat: MessageSquare,
   image: Images,
+  video: Film,
   tts: AudioLines,
   asr: FileAudio,
   embedding: Binary,

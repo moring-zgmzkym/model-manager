@@ -30,6 +30,9 @@ class Capability(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     binding: dict[str, Any] = Field(default_factory=dict)
     label: Optional[str] = None
+    # Sub-features of one capability (e.g. text-to-video / first-last-frame).
+    # Each item: {"id", "label", "description", "fields", "defaults", "workflow"}.
+    actions: list[dict[str, Any]] = Field(default_factory=list)
     # Set when the user edited this capability by hand; rescans leave it alone.
     locked: bool = False
 

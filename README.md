@@ -37,10 +37,10 @@ MODELDOCK_DATA=demo-data python run.py       # Windows: set MODELDOCK_DATA=demo-
 
 | 模型 | 识别为 | 自动添加的能力 | 启动方式 |
 | --- | --- | --- | --- |
-| MiniMax-H3 | Transformers 语言模型 | 文本对话 | 检测到 vLLM 用 vLLM，否则用内置 transformers 服务 |
-| MiniMind-O | 脚本项目 / 全模态 | 文本对话、图像理解、语音输入、语音输出（+ Web Demo） | 项目自带的 `serve_openai_api.py` |
+| MiniMax-H3 | ComfyUI 视频模型 | 视频生成（文生视频 / 图生视频 / 首尾帧过渡） | 项目自带的 `start-comfyui.bat` |
+| MiniMind-O | MiniMind 全模态项目 | 文本对话、图像理解、语音输入、语音输出 | ModelDock 的 `omni_server.py`（项目自带 Python） |
 | qwen3.5 | Transformers 语言模型 | 文本对话、图像理解 | 同上 |
-| qwen-image-2.1 | Diffusers 图像模型 | 文生图（编辑管线则为图像编辑） | 内置 diffusers 服务 |
+| qwen-image-2.1 | ComfyUI 图像模型 | 文生图、图像编辑 / 元素分离 | 项目自带的 `start-comfyui.bat` |
 | GPT-SoVITS-v2pro-20250604 | GPT-SoVITS 语音 | 语音合成、声音克隆、原生训练界面 | 整合包自带 `runtime/python` + `api_v2.py` |
 
 识别结果在添加前可以修改；之后也能在模型详情页随时调整。实际识别取决于你硬盘上的真实文件，如果某项判断不对，手动开关后会被"锁定"，重新识别时不会被覆盖。
@@ -54,6 +54,15 @@ MODELDOCK_DATA=demo-data python run.py       # Windows: set MODELDOCK_DATA=demo-
 | `{servers}` | 内置推理服务目录（`hf_chat_server.py`、`diffusers_server.py`） |
 
 也可以直接填写 `.bat` / `.sh` 启动脚本路径；如有专门的停止脚本，填在"停止命令"里。
+
+### 视频、ComfyUI 与子功能
+
+- **ComfyUI 项目**：识别 `start-comfyui.bat`、端口和 `models/` 里的权重名，自动生成内置工作流，通过 ComfyUI 的 `/prompt` 接口执行，结果自动进入作品库。
+- **MiniMax-H3**：视频面板提供文生视频、图生视频、首尾帧生视频；首尾帧会先上传到 ComfyUI 的 input 目录。
+- **qwen-image-2.1**：图像面板提供文生图与图像编辑 / 元素分离；编辑时参考图作为 `image_1` 送入文本编码器。
+- **Ollama**：包含 `Modelfile` 或 `start-ollama.bat` 的目录会被识别为 OpenAI 兼容服务（默认 11434），工作台直接对话。
+- **MiniMind-O**：不再嵌入 Gradio。ModelDock 自带 `omni_server.py`，复用项目 demo 的加载与推理代码，提供专用页面：文字 / 图片 / 录音输入，流式文字 + 语音回复，可直接选内置音色。
+- **子功能（actions）**：一个能力可以带多个子功能，各自有字段与工作流。工作台会按 `actions` 生成标签页和表单；工作流保存在能力的 `binding.workflow` 里，可在「模型详情 → 高级 → 能力 JSON」中调整，换权重后点一次「重新识别」重建。
 
 ## 扩展
 
@@ -70,7 +79,7 @@ MODELDOCK_DATA=demo-data python run.py       # Windows: set MODELDOCK_DATA=demo-
 }
 ```
 
-可用能力：`chat` `vision` `audio_input` `speech_output` `asr` `tts` `voice_clone` `image_generation` `image_edit` `embedding` `webui` `custom`。
+可用能力：`chat` `vision` `audio_input` `speech_output` `asr` `tts` `voice_clone` `image_generation` `image_edit` `video_generation` `embedding` `webui` `custom`。
 
 ### 2. 插件
 
@@ -99,9 +108,10 @@ run.py                 启动器（自动构建前端、打开浏览器 / 窗口
 backend/modeldock/     FastAPI 后端
   detect.py            文件夹分析与能力推断
   probe.py             运行时 API 探测
+  comfyui.py           ComfyUI 工作流客户端（提交 / 轮询 / 取回生成物）
   process.py           进程管理、就绪检测、日志
-  invoke.py            统一调用代理（OpenAI 兼容 / GPT-SoVITS / 自定义 HTTP）
-backend/servers/       内置推理服务与模拟服务
+  invoke.py            统一调用代理（OpenAI 兼容 / GPT-SoVITS / ComfyUI / 自定义 HTTP）
+backend/servers/       内置推理服务与模拟服务（omni_server.py：MiniMind-O 文字/图片/语音）
 frontend/              React + TypeScript 界面
 plugins/               识别插件
 data/                  配置、日志、上传、作品（运行时生成）

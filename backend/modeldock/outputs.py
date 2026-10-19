@@ -16,7 +16,8 @@ from .schemas import new_id
 _lock = threading.Lock()
 EXT_BY_MIME = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "audio/wav": ".wav",
                "audio/x-wav": ".wav", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/flac": ".flac",
-               "audio/webm": ".webm", "audio/aac": ".aac"}
+               "audio/webm": ".webm", "audio/aac": ".aac",
+               "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov", "image/gif": ".gif"}
 
 
 def outputs_dir() -> Path:

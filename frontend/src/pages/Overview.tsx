@@ -1,4 +1,4 @@
-import { ArrowRight, AudioLines, Cpu, Eye, Images, MemoryStick, MessageSquare, Monitor, Music2, Plus, Zap } from "lucide-react";
+import { ArrowRight, AudioLines, Cpu, Eye, Film, Images, MemoryStick, MessageSquare, Monitor, Music2, Plus, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AddModelDialog } from "../components/AddModelDialog";
@@ -9,7 +9,7 @@ import { bytes, duration, greeting } from "../lib/format";
 import { useStore } from "../lib/store";
 import type { Model, OutputItem, SystemStats } from "../lib/types";
 
-const TASK_ICONS: Record<string, typeof MessageSquare> = { chat: MessageSquare, vision: Eye, image: Images, voice: AudioLines };
+const TASK_ICONS: Record<string, typeof MessageSquare> = { chat: MessageSquare, vision: Eye, image: Images, video: Film, voice: AudioLines };
 
 export function ModelCard({ model }: { model: Model }) {
   const nav = useNavigate();
@@ -176,7 +176,7 @@ export function Overview() {
           <div className="recent-strip">
             {recent.map((o) => (
               <div key={o.id} className={`recent-item ${o.kind}`} onClick={() => nav("/gallery")} style={{ cursor: "pointer" }} title={o.prompt}>
-                {o.kind === "image" ? <img src={o.url} alt="" /> : <Music2 size={22} />}
+                {o.kind === "image" ? <img src={o.url} alt="" /> : o.kind === "video" ? <Film size={22} /> : <Music2 size={22} />}
               </div>
             ))}
           </div>

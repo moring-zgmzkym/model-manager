@@ -23,7 +23,11 @@ export function Lightbox({ item, onClose, onDelete }: { item: OutputItem; onClos
   }, [onClose]);
   return (
     <div className="lightbox" onClick={onClose}>
-      <div className="lightbox-img"><img src={item.url} alt="" onClick={(e) => e.stopPropagation()} /></div>
+      <div className="lightbox-img">
+        {item.kind === "video"
+          ? <video src={item.url} controls autoPlay onClick={(e) => e.stopPropagation()} />
+          : <img src={item.url} alt="" onClick={(e) => e.stopPropagation()} />}
+      </div>
       <div className="lightbox-side" onClick={(e) => e.stopPropagation()}>
         <div className="row"><strong style={{ flex: 1 }}>作品详情</strong><button className="btn ghost icon sm" onClick={onClose}><X size={15} /></button></div>
         <Field label="提示词"><div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{item.prompt || "—"}</div></Field>

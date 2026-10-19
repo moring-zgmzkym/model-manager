@@ -394,6 +394,22 @@ def open_folder(body: dict = Body(...)):
 
 
 # ---------------------------------------------------------------- invoke
+@app.post("/api/models/{model_id}/omni/chat")
+async def omni_chat(model_id: str, payload: dict = Body(...)):
+    m = must(model_id)
+    cap = next((c for c in m.capabilities
+                if c.enabled and c.type == "chat" and c.binding.get("protocol") == "omni"), None)
+    if not cap:
+        raise HTTPException(400, "该模型没有启用 Omni 对话")
+    return StreamingResponse(invoke.omni_chat_stream(m, cap, payload), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/models/{model_id}/omni/voices")
+async def omni_voices(model_id: str):
+    return await invoke.omni_voices(must(model_id))
+
+
 @app.post("/api/models/{model_id}/chat")
 async def chat(model_id: str, payload: dict = Body(...)):
     m = must(model_id)
@@ -404,6 +420,16 @@ async def chat(model_id: str, payload: dict = Body(...)):
 @app.post("/api/models/{model_id}/image")
 async def image(model_id: str, payload: dict = Body(...)):
     return await invoke.image_generate(must(model_id), payload)
+
+
+@app.post("/api/models/{model_id}/video")
+async def video(model_id: str, payload: dict = Body(...)):
+    return await invoke.video_generate(must(model_id), payload)
+
+
+@app.post("/api/models/{model_id}/video/stop")
+async def video_stop(model_id: str):
+    return await invoke.video_interrupt(must(model_id))
 
 
 @app.post("/api/models/{model_id}/tts")

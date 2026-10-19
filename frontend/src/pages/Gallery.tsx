@@ -1,4 +1,4 @@
-import { FolderOpen, Images, Music2, Trash2 } from "lucide-react";
+import { Film, FolderOpen, Images, Music2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Empty } from "../components/ui";
 import { api } from "../lib/api";
@@ -10,7 +10,7 @@ import { Lightbox } from "../panels/ImagePanel";
 export function Gallery() {
   const { models, toast } = useStore();
   const [items, setItems] = useState<OutputItem[]>([]);
-  const [kind, setKind] = useState<"all" | "image" | "audio">("all");
+  const [kind, setKind] = useState<"all" | "image" | "audio" | "video">("all");
   const [modelId, setModelId] = useState("");
   const [view, setView] = useState<OutputItem | null>(null);
 
@@ -19,6 +19,7 @@ export function Gallery() {
 
   const shown = items.filter((o) => (kind === "all" || o.kind === kind) && (!modelId || o.model_id === modelId));
   const images = shown.filter((o) => o.kind === "image");
+  const videos = shown.filter((o) => o.kind === "video");
   const audios = shown.filter((o) => o.kind === "audio");
   const usedModels = [...new Set(items.map((o) => o.model_id))].map((id) => ({ id, name: items.find((o) => o.model_id === id)?.model_name || models.find((m) => m.id === id)?.name || id }));
 
@@ -44,6 +45,7 @@ export function Gallery() {
         <div className="segmented">
           <button className={kind === "all" ? "on" : ""} onClick={() => setKind("all")}>全部 <span className="faint">{items.length}</span></button>
           <button className={kind === "image" ? "on" : ""} onClick={() => setKind("image")}><Images size={14} /> 图片</button>
+          <button className={kind === "video" ? "on" : ""} onClick={() => setKind("video")}><Film size={14} /> 视频</button>
           <button className={kind === "audio" ? "on" : ""} onClick={() => setKind("audio")}><Music2 size={14} /> 音频</button>
         </div>
         <span className="spacer" />
@@ -64,6 +66,19 @@ export function Gallery() {
                 {images.map((o) => (
                   <div key={o.id} className="gallery-item" onClick={() => setView(o)}>
                     <img src={o.url} alt="" loading="lazy" />
+                    <div className="cap"><div className="ellipsis">{o.prompt}</div><div style={{ opacity: .7 }}>{o.model_name} · {timeAgo(o.created_at)}</div></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {videos.length > 0 && (
+            <div>
+              {kind === "all" && <h3 className="section-title" style={{ marginBottom: 16 }}>视频</h3>}
+              <div className="gallery-grid">
+                {videos.map((o) => (
+                  <div key={o.id} className="gallery-item" onClick={() => setView(o)}>
+                    <video src={o.url} preload="metadata" muted style={{ width: "100%", display: "block" }} />
                     <div className="cap"><div className="ellipsis">{o.prompt}</div><div style={{ opacity: .7 }}>{o.model_name} · {timeAgo(o.created_at)}</div></div>
                   </div>
                 ))}

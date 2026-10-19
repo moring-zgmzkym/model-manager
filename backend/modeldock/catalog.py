@@ -29,6 +29,8 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
                          "desc": "根据描述生成图片"},
     "image_edit": {"label": "图像编辑", "group": "image", "panel": "image", "protocol": "openai_images",
                    "desc": "根据指令修改已有图片"},
+    "video_generation": {"label": "视频生成", "group": "video", "panel": "video", "protocol": "comfyui",
+                         "desc": "文生视频、图生视频、首尾帧过渡"},
     "embedding": {"label": "文本向量", "group": "language", "panel": "embedding", "protocol": "openai_embeddings",
                   "desc": "计算文本向量与相似度"},
     "webui": {"label": "原生界面", "group": "tools", "panel": "webui", "protocol": "webui",
@@ -44,6 +46,8 @@ PROTOCOLS: dict[str, str] = {
     "openai_transcription": "OpenAI 兼容 /v1/audio/transcriptions",
     "openai_embeddings": "OpenAI 兼容 /v1/embeddings",
     "gpt_sovits": "GPT-SoVITS api_v2 /tts",
+    "comfyui": "ComfyUI 工作流 /prompt",
+    "omni": "MiniMind-O 原生服务 /chat",
     "webui": "嵌入网页界面",
     "custom_http": "自定义 HTTP 模板",
 }
@@ -57,6 +61,9 @@ ADAPTERS: dict[str, str] = {
     "gradio_app": "Gradio / WebUI 项目",
     "script_project": "脚本项目",
     "openai_remote": "已运行的 API 服务",
+    "comfyui": "ComfyUI 工作流项目",
+    "ollama": "Ollama 服务",
+    "omni": "MiniMind 全模态项目",
     "custom": "自定义",
 }
 

@@ -11,6 +11,7 @@ const FILTERS: { id: string; label: string; caps?: string[] }[] = [
   { id: "running", label: "运行中" },
   { id: "language", label: "语言", caps: ["chat", "vision", "embedding"] },
   { id: "image", label: "图像", caps: ["image_generation", "image_edit"] },
+  { id: "video", label: "视频", caps: ["video_generation"] },
   { id: "audio", label: "语音", caps: ["tts", "voice_clone", "asr", "speech_output", "audio_input"] },
 ];
 

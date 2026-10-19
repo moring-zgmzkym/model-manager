@@ -93,6 +93,13 @@ async def probe(base_url: str, timeout: float = 4.0) -> ProbeResult:
             if len(paths) and not caps:
                 res.notes.append("发现以下接口，可用“自定义接口”调用：" + "、".join(paths[:12]))
 
+        r = await get("/system_stats")
+        if r is not None and r.status_code == 200 and "comfyui_version" in (r.text or "")[:20000]:
+            res.reachable = True
+            res.kinds.append("comfyui")
+            caps.append(cap("webui", 0.9, "检测到 ComfyUI 服务", source="runtime",
+                            binding={"protocol": "webui", "url": base}))
+
         r = await get("/config")
         if r is not None and r.status_code == 200 and "components" in (r.text or "")[:200000]:
             res.reachable = True

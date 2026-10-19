@@ -5,10 +5,12 @@ import { Empty, ModelAvatar, PANEL_ICONS, PowerButton, StatusBadge } from "../co
 import { panelsFor } from "../lib/capabilities";
 import { duration } from "../lib/format";
 import { useStore } from "../lib/store";
+import { ActionPanel } from "../panels/ActionPanel";
 import { ChatPanel } from "../panels/ChatPanel";
 import { CustomPanel } from "../panels/CustomPanel";
 import { EmbeddingPanel } from "../panels/EmbeddingPanel";
 import { ImagePanel } from "../panels/ImagePanel";
+import { OmniPanel } from "../panels/OmniPanel";
 import { AsrPanel, TtsPanel } from "../panels/AudioPanels";
 import { WebuiPanel } from "../panels/WebuiPanel";
 
@@ -39,6 +41,12 @@ export function Studio() {
   }
 
   const st = model?.runtime.status;
+  const comfyImage = !!model?.capabilities.some(
+    (c) => c.enabled && (c.type === "image_generation" || c.type === "image_edit") && c.binding.protocol === "comfyui",
+  );
+  const omniChat = !!model?.capabilities.some(
+    (c) => c.enabled && c.type === "chat" && c.binding.protocol === "omni",
+  );
   const needsServer = panelId !== "webui";
   const remote = model?.adapter === "openai_remote";
   const ready = st === "running" || remote;
@@ -97,8 +105,15 @@ export function Studio() {
               </div>
             )}
             <div className="studio-body" style={panelId === "chat" || panelId === "webui" ? { overflow: "hidden", position: "relative" } : undefined}>
-              {panelId === "chat" && <ChatPanel key={model.id} model={model} ready={!!ready} />}
-              {panelId === "image" && <ImagePanel key={model.id} model={model} ready={!!ready} />}
+              {panelId === "chat" && (omniChat
+                ? <OmniPanel key={model.id} model={model} ready={!!ready} />
+                : <ChatPanel key={model.id} model={model} ready={!!ready} />)}
+              {panelId === "image" && (comfyImage
+                ? <ActionPanel key={model.id} model={model} ready={!!ready} capTypes={["image_generation", "image_edit"]} endpoint="image" kind="image" />
+                : <ImagePanel key={model.id} model={model} ready={!!ready} />)}
+              {panelId === "video" && (
+                <ActionPanel key={model.id} model={model} ready={!!ready} capTypes={["video_generation"]} endpoint="video" kind="video" />
+              )}
               {panelId === "tts" && <TtsPanel key={model.id} model={model} ready={!!ready} />}
               {panelId === "asr" && <AsrPanel key={model.id} model={model} ready={!!ready} />}
               {panelId === "embedding" && <EmbeddingPanel key={model.id} model={model} ready={!!ready} />}

@@ -41,11 +41,13 @@ MAX_DEPTH = 3
 
 # --------------------------------------------------------------------------- helpers
 def cap(type_: str, confidence: float, evidence: str | Iterable[str], source: str = "files",
-        binding: Optional[dict] = None, label: Optional[str] = None) -> Capability:
+        binding: Optional[dict] = None, label: Optional[str] = None,
+        actions: Optional[list[dict[str, Any]]] = None) -> Capability:
     ev = [evidence] if isinstance(evidence, str) else list(evidence)
     return Capability(
         type=type_, confidence=round(min(confidence, 1.0), 2), evidence=ev, source=source,  # type: ignore[arg-type]
         binding=binding or default_binding(type_), enabled=confidence >= ENABLE_THRESHOLD, label=label,
+        actions=actions or [],
     )
 
 
@@ -76,6 +78,8 @@ def merge_caps(base: list[Capability], extra: Iterable[Capability]) -> list[Capa
             type=c.type, confidence=round(min(conf, 1.0), 2), evidence=evidence, source=stronger.source,
             binding=binding, label=c.label or cur.label,
             enabled=cur.enabled or c.enabled or conf >= ENABLE_THRESHOLD,
+            # Runtime probes carry no actions; never drop the ones the file scan found.
+            actions=c.actions or cur.actions or [],
         )
     return list(out.values())
 
@@ -356,6 +360,306 @@ def script_command(root: Path, rel: Path) -> str:
     return f"bash {q(str(p))}"
 
 
+# ---------------------------------------------------------------- comfyui / ollama
+COMFY_MODEL_DIRS = ("unet", "diffusion_models", "checkpoints", "text_encoders", "clip", "vae", "loras")
+
+
+def find_comfy_dir(sc: Scan) -> Optional[Path]:
+    for f in sc.files:
+        if f.name.lower() == "main.py" and len(f.parts) >= 2 and f.parts[-2].lower() == "comfyui":
+            return sc.root / f.parent
+    return None
+
+
+def comfy_models(comfy_dir: Path) -> dict[str, list[Path]]:
+    found: dict[str, list[Path]] = {}
+    root = comfy_dir / "models"
+    for name in COMFY_MODEL_DIRS:
+        folder = root / name
+        if not folder.is_dir():
+            continue
+        found[name] = [p for p in sorted(folder.iterdir())
+                       if p.is_file() and p.suffix.lower() in (".gguf", ".safetensors", ".ckpt", ".pt", ".pth")]
+    return found
+
+
+def _matching(files: list[Path], *needles: str) -> list[Path]:
+    out = list(files)
+    for needle in needles:
+        hits = [f for f in out if needle in f.name.lower()]
+        if hits:
+            return hits
+    return []
+
+
+def _one(files: list[Path], *needles: str) -> Optional[Path]:
+    hits = _matching(files, *needles)
+    if not hits:
+        return None
+    return max(hits, key=lambda p: p.stat().st_size if p.exists() else 0)
+
+
+def _best_unet(files: list[Path]) -> Optional[Path]:
+    rank = {"q2": 2, "q3": 3, "q4": 4, "q5": 5, "q6": 6, "q8": 8}
+    hits = _matching(files, "minimax_h3", "fl2va", "qwen-image", "qwen_image") or list(files)
+    if not hits:
+        return None
+
+    def score(p: Path) -> tuple[int, int]:
+        m = re.search(r"q(\d)_k", p.name.lower())
+        return (rank.get(f"q{m.group(1)}", 0) if m else 0,
+                p.stat().st_size if p.exists() else 0)
+
+    return max(hits, key=score)
+
+
+def _num_field(name: str, label: str, default: Any, **extra: Any) -> dict[str, Any]:
+    return {"name": name, "label": label, "type": "number", "default": default, **extra}
+
+
+def _minimax_workflow(models: dict[str, list[Path]]) -> Optional[dict[str, Any]]:
+    unets = models.get("unet", []) + models.get("diffusion_models", [])
+    unet = _best_unet(unets)
+    clip = _one(models.get("text_encoders", []) + models.get("clip", []), "minimax_h3", "qwen3vl")
+    vae_video = _one(models.get("vae", []), "video_vae", "minimax_h3_video")
+    vae_audio = _one(models.get("vae", []), "audio_vae", "minimax_h3_audio")
+    if not (unet and clip and vae_video and vae_audio):
+        return None
+    loras = _matching(models.get("loras", []), "8step") or _matching(models.get("loras", []), "fl2v") or models.get("loras", [])
+    lora = max(loras, key=lambda p: p.stat().st_size) if loras else None
+    model_source: list[Any] = ["1", 0]
+    graph: dict[str, Any] = {
+        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": unet.name}},
+        "2": {"class_type": "CLIPLoaderGGUF", "inputs": {"clip_name": clip.name, "type": "minimax"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae_video.name}},
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": vae_audio.name}},
+        "6": {"class_type": "MiniMaxH3ImageToVideo",
+              "inputs": {"clip": ["2", 0], "vae": ["3", 0], "prompt": "{{prompt}}",
+                         "width": "{{width}}", "height": "{{height}}", "length": "{{length}}",
+                         "first_frame": ["20", 0], "last_frame": ["21", 0]}},
+        "7": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}},
+        "8": {"class_type": "BasicScheduler",
+              "inputs": {"model": model_source, "scheduler": "simple", "steps": "{{steps}}", "denoise": 1.0}},
+        "9": {"class_type": "RandomNoise", "inputs": {"noise_seed": "{{seed}}"}},
+        "10": {"class_type": "BasicGuider", "inputs": {"model": model_source, "conditioning": ["6", 0]}},
+        "11": {"class_type": "SamplerCustomAdvanced",
+               "inputs": {"noise": ["9", 0], "guider": ["10", 0], "sampler": ["7", 0],
+                          "sigmas": ["8", 0], "latent_image": ["6", 1]}},
+        "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["3", 0]}},
+        "13": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["11", 0], "vae": ["4", 0]}},
+        "14": {"class_type": "CreateVideo",
+               "inputs": {"images": ["12", 0], "audio": ["13", 0], "fps": 24, "bit_depth": 8}},
+        "15": {"class_type": "SaveVideo",
+               "inputs": {"video": ["14", 0], "filename_prefix": "video/ModelDock", "format": "auto", "codec": "auto"}},
+        "20": {"class_type": "LoadImage", "_if": "first_frame", "inputs": {"image": "{{first_frame}}"}},
+        "21": {"class_type": "LoadImage", "_if": "last_frame", "inputs": {"image": "{{last_frame}}"}},
+    }
+    if lora is not None:
+        graph["5"] = {"class_type": "LoraLoaderModelOnly",
+                      "inputs": {"model": ["1", 0], "lora_name": lora.name, "strength_model": 1.0}}
+        model_source = ["5", 0]
+        graph["8"]["inputs"]["model"] = model_source
+        graph["10"]["inputs"]["model"] = model_source
+    return graph
+
+
+def _qwen_workflow(models: dict[str, list[Path]]) -> Optional[dict[str, Any]]:
+    unets = models.get("unet", []) + models.get("diffusion_models", [])
+    unet = _best_unet(unets)
+    clip = _one(models.get("text_encoders", []) + models.get("clip", []), "qwen3vl", "qwen")
+    vae = _one(models.get("vae", []), "qwen_image", "vae")
+    if not (unet and clip and vae):
+        return None
+    return {
+        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": unet.name}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip.name, "type": "qwen_image"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae.name}},
+        "4": {"class_type": "EmptyLatentImage",
+              "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}},
+        "5": {"class_type": "TextEncodeQwenImage21",
+              "inputs": {"clip": ["2", 0], "prompt": "{{prompt}}", "negative_prompt": "{{negative_prompt}}",
+                         "resolution": "{{resolution}}", "images": []}},
+        "6": {"class_type": "KSampler",
+              "inputs": {"model": ["1", 0], "positive": ["5", 0], "negative": ["5", 1],
+                         "latent_image": ["4", 0], "seed": "{{seed}}", "steps": "{{steps}}",
+                         "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["3", 0]}},
+        "8": {"class_type": "SaveImage", "inputs": {"images": ["7", 0], "filename_prefix": "ModelDock/qwen"}},
+    }
+
+
+def _qwen_edit_workflow(models: dict[str, list[Path]]) -> Optional[dict[str, Any]]:
+    """Image editing: reference images go through the autogrow inputs image_1..16."""
+    base = _qwen_workflow(models)
+    if not base:
+        return None
+    unet = base["1"]["inputs"]["unet_name"]
+    clip = base["2"]["inputs"]["clip_name"]
+    vae = base["3"]["inputs"]["vae_name"]
+    return {
+        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": unet}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": "qwen_image"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+        "4": {"class_type": "TextEncodeQwenImage21",
+              "inputs": {"clip": ["2", 0], "vae": ["3", 0], "prompt": "{{prompt}}",
+                         "negative_prompt": "{{negative_prompt}}", "resolution": "{{resolution}}",
+                         "images": {"image_1": ["20", 0]}}},
+        "5": {"class_type": "KSampler",
+              "inputs": {"model": ["1", 0], "positive": ["4", 0], "negative": ["4", 1],
+                         "latent_image": ["4", 2], "seed": "{{seed}}", "steps": "{{steps}}",
+                         "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+        "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["3", 0]}},
+        "7": {"class_type": "SaveImage", "inputs": {"images": ["6", 0], "filename_prefix": "ModelDock/qwen-edit"}},
+        "20": {"class_type": "LoadImage", "inputs": {"image": "{{image}}"}},
+    }
+
+
+def detect_comfyui(sc: Scan, root: Path) -> Optional[Draft]:
+    comfy = find_comfy_dir(sc)
+    if not comfy:
+        return None
+    models = comfy_models(comfy)
+    names = " ".join(p.name.lower() for files in models.values() for p in files)
+    if not names.strip():
+        return None
+    video_graph = _minimax_workflow(models) if ("minimax_h3" in names or "fl2va" in names) else None
+    image_graph = _qwen_workflow(models) if ("qwen-image" in names or "qwen_image" in names) else None
+    edit_graph = _qwen_edit_workflow(models) if image_graph else None
+    if not video_graph and not image_graph:
+        return None
+
+    scripts = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in (".bat", ".cmd", ".sh")] \
+        if root.is_dir() else []
+    starts = [p for p in scripts if re.search(r"start-comfyui", p.name, re.I)]
+    starts.sort(key=lambda p: (p.stem.lower() != "start-comfyui", len(p.name)))
+    start = starts[0] if starts else next(
+        (p for p in scripts if re.search(r"start|run", p.name, re.I)
+         and not re.search(r"stop|test|download", p.name, re.I)), None)
+    stops = [p for p in scripts if re.search(r"stop-comfyui", p.name, re.I)]
+    stops.sort(key=lambda p: (p.stem.lower() != "stop-comfyui", len(p.name)))
+    stop = stops[0] if stops else None
+    port = sniff_port(read_text(start, 20_000)) if start and start.suffix.lower() in SCRIPT_EXT else None
+    port = port or 8188
+    if start and start.suffix.lower() in SCRIPT_EXT:
+        command = script_command(root, start.relative_to(root))
+    else:
+        command = f"{local_python(root) or '{python}'} -s {q(str(comfy / 'main.py'))}"
+
+    d = Draft(adapter="comfyui", description="ComfyUI 工作流项目", use_hints=False)
+    d.launch = LaunchConfig(command=command, cwd=str(root), port=port, health_path="/system_stats",
+                            startup_timeout=900,
+                            stop_command=script_command(root, stop.relative_to(root)) if stop else "")
+    d.caps.append(cap("webui", 0.9, "发现 ComfyUI 网页界面",
+                      binding={"protocol": "webui", "url": f"http://127.0.0.1:{port}"}))
+
+    base_fields = [
+        {"name": "prompt", "label": "提示词", "type": "textarea", "required": True},
+        _num_field("width", "宽度", 864),
+        _num_field("height", "高度", 480),
+        _num_field("length", "帧数", 49, help="24fps，121 帧约 5 秒"),
+        _num_field("steps", "采样步数", 8),
+        _num_field("seed", "随机种子", -1, help="-1 表示每次随机"),
+    ]
+    if video_graph:
+        actions = [
+            {"id": "t2v", "label": "文生视频", "description": "只给文字描述生成视频",
+             "fields": base_fields, "defaults": {"width": 864, "height": 480, "length": 49}},
+            {"id": "i2v", "label": "图生视频", "description": "以一张图作为首帧生成视频",
+             "fields": base_fields + [{"name": "first_frame", "label": "首帧图片", "type": "image"}],
+             "defaults": {"width": 864, "height": 480, "length": 49}},
+            {"id": "flf2v", "label": "首尾帧生视频", "description": "给定首帧与尾帧，生成中间的过渡视频",
+             "fields": base_fields + [{"name": "first_frame", "label": "首帧图片", "type": "image"},
+                                      {"name": "last_frame", "label": "尾帧图片", "type": "image"}],
+             "defaults": {"width": 864, "height": 480, "length": 121}},
+        ]
+        d.caps.append(cap("video_generation", 0.95, "发现 MiniMax-H3 视频权重与首尾帧节点",
+                          binding={"protocol": "comfyui", "base_url": f"http://127.0.0.1:{port}",
+                                   "workflow": video_graph, "timeout": 3600},
+                          actions=actions))
+    if image_graph:
+        actions = [
+            {"id": "t2i", "label": "文生图", "description": "按文字描述生成图片",
+             "fields": [
+                 {"name": "prompt", "label": "画面描述", "type": "textarea", "required": True},
+                 {"name": "negative_prompt", "label": "反向提示词", "type": "textarea", "default": ""},
+                 _num_field("width", "宽度", 1024),
+                 _num_field("height", "高度", 1024),
+                 _num_field("resolution", "编码分辨率", 1024),
+                 _num_field("steps", "采样步数", 25),
+                 _num_field("cfg", "CFG", 1.0),
+                 _num_field("seed", "随机种子", -1),
+             ]},
+        ]
+        if edit_graph:
+            actions.append({
+                "id": "edit", "label": "图像编辑 / 元素分离",
+                "description": "上传一张图并按指令修改；也可以让它把人物、背景、文字等元素分别拆出来",
+                "fields": [
+                    {"name": "image", "label": "参考图片", "type": "image", "required": True},
+                    {"name": "prompt", "label": "编辑指令", "type": "textarea", "required": True,
+                     "placeholder": "例如：把人物、背景、文字分别拆成透明图层"},
+                    {"name": "negative_prompt", "label": "反向提示词", "type": "textarea", "default": ""},
+                    _num_field("resolution", "编码分辨率", 1024),
+                    _num_field("steps", "采样步数", 25),
+                    _num_field("cfg", "CFG", 1.0),
+                    _num_field("seed", "随机种子", -1),
+                ],
+                "workflow": edit_graph,
+            })
+        d.caps.append(cap("image_generation", 0.9, "发现 Qwen-Image 权重",
+                          binding={"protocol": "comfyui", "base_url": f"http://127.0.0.1:{port}",
+                                   "workflow": image_graph, "timeout": 1800},
+                          actions=actions))
+        d.caps.append(cap("image_edit", 0.85, "Qwen-Image 2.1 支持参考图编辑",
+                          binding={"protocol": "comfyui", "base_url": f"http://127.0.0.1:{port}",
+                                   "workflow": edit_graph or image_graph, "timeout": 1800},
+                          actions=[a for a in actions if a["id"] == "edit"] or actions[:1]))
+    d.notes.append(f"ComfyUI 目录：{comfy}")
+    d.notes.append("工作台通过 ComfyUI 的 /prompt 接口提交工作流；首次生成需要加载模型，可能较慢。")
+    return d
+
+
+def detect_ollama(sc: Scan, root: Path) -> Optional[Draft]:
+    modelfile = sc.has("Modelfile") or sc.has("modelfile")
+    bat = next((p for p in root.iterdir() if p.is_file() and re.search(r"start-ollama", p.name, re.I)), None) \
+        if root.is_dir() else None
+    has_ollama = (root / "ollama").is_dir() or bat is not None
+    if not (modelfile or has_ollama):
+        return None
+
+    served = ""
+    if modelfile:
+        m = re.search(r"^\s*FROM\s+(\S+)", read_text(root / modelfile, 20_000), re.M | re.I)
+        if m:
+            served = m.group(1)
+    port = 11434
+    command = ""
+    if bat is not None:
+        command = script_command(root, bat.relative_to(root))
+        m = re.search(r"OLLAMA_HOST\s*=\s*[^\s:]*:(\d{2,5})", read_text(bat, 20_000), re.I)
+        if m:
+            port = int(m.group(1))
+    elif local_python(root):
+        command = f"{q(local_python(root))} -m ollama serve"
+    else:
+        command = "ollama serve"
+
+    d = Draft(adapter="ollama", description="Ollama 本地模型服务", use_hints=False)
+    d.launch = LaunchConfig(command=command, cwd=str(root), port=port, health_path="/v1/models",
+                            startup_timeout=300)
+    d.caps.append(cap("chat", 0.95, "检测到 Ollama 模型目录", binding={"protocol": "openai_chat"}))
+    if served and re.search(r"embed|bge|gte", served, re.I):
+        d.caps.append(cap("embedding", 0.9, f"Ollama 模型 {served} 疑似向量模型",
+                          binding={"protocol": "openai_embeddings"}))
+    if served:
+        d.defaults["model"] = served
+    d.notes.append("ModelDock 调用 Ollama 的 OpenAI 兼容接口（/v1/chat/completions）。")
+    if served:
+        d.notes.append(f"模型名：{served}")
+    return d
+
+
+
 # --------------------------------------------------------------------------- adapters
 @dataclass
 class Draft:
@@ -366,6 +670,8 @@ class Draft:
     notes: list[str] = field(default_factory=list)
     defaults: dict[str, Any] = field(default_factory=dict)
     use_hints: bool = True
+    # A project whose only interface is a Gradio/Streamlit page: no OpenAI-compatible API.
+    gradio_only: bool = False
 
 
 def detect_gpt_sovits(sc: Scan, root: Path) -> Optional[Draft]:
@@ -531,6 +837,54 @@ def detect_hf(sc: Scan, root: Path, settings: Settings) -> Optional[Draft]:
     return d
 
 
+def detect_minimind(sc: Scan, root: Path) -> Optional[Draft]:
+    """MiniMind-O style repo: a Gradio demo plus a small HF model folder.
+
+    We do not drive the Gradio UI.  ModelDock ships servers/omni_server.py, which
+    imports the project's own demo helpers and exposes a small HTTP API, so the
+    workbench can provide a native text/image/audio page.
+    """
+    demo_file = next((f for f in sc.files if f.name == "web_demo_omni.py"), None)
+    if not demo_file:
+        return None
+    scripts_dir = root / demo_file.parent
+    repo = scripts_dir.parent
+    if not scripts_dir.is_dir():
+        return None
+    candidates = []
+    for sub in sorted(scripts_dir.iterdir()):
+        if not sub.is_dir() or sub.name.startswith((".", "_")):
+            continue
+        has_weights = (sub / "pytorch_model.bin").exists() or (sub / "model.safetensors").exists()
+        if (sub / "config.json").exists() and has_weights:
+            candidates.append(sub)
+    if not candidates:
+        return None
+    model_dir = next((c for c in candidates if "minimind" in c.name.lower()), candidates[0])
+
+    venv = root / ".venv" / "Scripts" / "python.exe"
+    if not venv.exists():
+        venv = root / ".venv" / "bin" / "python"
+    pyref = q(str(venv)) if venv.exists() else "{python}"
+    command = (f'{pyref} "{{servers}}/omni_server.py" --repo {q(str(repo))} '
+               f'--model {q(str(model_dir))} --host {{host}} --port {{port}}')
+
+    d = Draft(adapter="omni", description="MiniMind-O 全模态模型（文字 / 图片 / 语音）", use_hints=False)
+    d.launch = LaunchConfig(command=command, cwd=str(root), python=str(venv) if venv.exists() else "",
+                            health_path="/health", startup_timeout=900)
+    binding = {"protocol": "omni"}
+    d.caps += [
+        cap("chat", 0.95, "发现 MiniMind-O 的 web_demo_omni.py 与模型权重", binding=binding),
+        cap("vision", 0.9, "MiniMind-O 自带 SigLIP 视觉编码器", binding=binding),
+        cap("audio_input", 0.9, "MiniMind-O 自带 SenseVoice 语音编码器", binding=binding),
+        cap("speech_output", 0.9, "MiniMind-O 自带 Mimi 语音解码器", binding=binding),
+    ]
+    d.defaults["model"] = model_dir.name
+    d.notes.append(f"使用项目自带解释器：{venv}" if venv.exists() else "未找到项目自带 .venv，请手动指定解释器")
+    d.notes.append("由 ModelDock 的 omni_server.py 提供文字 / 图片 / 语音输入与语音回复，无需 Gradio 页面。")
+    return d
+
+
 def detect_script_project(sc: Scan, root: Path) -> Optional[Draft]:
     servers = sniff_server_scripts(sc)
     scripts = find_scripts(sc)
@@ -541,8 +895,8 @@ def detect_script_project(sc: Scan, root: Path) -> Optional[Draft]:
     d = Draft(adapter="script_project", description="包含启动脚本的模型项目")
     api = next((s for s in servers if s.kind in ("openai", "gpt_sovits", "fastapi")), None)
     ui = next((s for s in servers if s.kind in ("gradio", "streamlit")), None)
-    start_script = next((s for s in scripts if re.search(r"start|run|launch|serve|api", s.name, re.I)
-                         and not re.search(r"stop|kill|train", s.name, re.I)), None)
+    start_script = next((s for s in scripts if re.search(r"start|run|launch|serve|api|webui", s.name, re.I)
+                         and not re.search(r"stop|kill|train|test|bench|smoke|download", s.name, re.I)), None)
     stop_script = next((s for s in scripts if re.search(r"stop|kill|shutdown", s.name, re.I)), None)
     if api:
         d.launch = LaunchConfig(command=f"{pyref} {api.path.as_posix()}", cwd=str(root), port=api.port,
@@ -563,12 +917,16 @@ def detect_script_project(sc: Scan, root: Path) -> Optional[Draft]:
         ui_cmd = (f"{pyref} -m streamlit run {ui.path.as_posix()} --server.port {ui.port} --server.headless true"
                   if ui.kind == "streamlit" else f"{pyref} {ui.path.as_posix()}")
         binding: dict[str, Any] = {"protocol": "webui", "url": f"http://127.0.0.1:{ui.port}", "port": ui.port}
-        if api or start_script:
+        if api:
+            # API and UI are separate processes: the UI becomes a sub-service.
             binding.update(command=ui_cmd, cwd=str(root))
         else:
-            d.launch = LaunchConfig(command=ui_cmd, cwd=str(root), port=ui.port)
-            d.adapter = "gradio_app"
-            binding["url"] = ""
+            # The UI *is* the main service; reuse the main service so we never start it twice.
+            if not d.launch.command:
+                d.launch = LaunchConfig(command=ui_cmd, cwd=str(root), port=ui.port)
+                d.adapter = "gradio_app"
+            d.launch.port = d.launch.port or ui.port
+            d.gradio_only = True
         d.caps.append(cap("webui", 0.8, f"发现 {ui.kind} 界面 {ui.path.as_posix()}", binding=binding))
     if py:
         d.notes.append(f"使用项目自带的 Python：{py}")
@@ -626,7 +984,7 @@ def detect(path_str: str, settings: Optional[Settings] = None, plugin_detectors:
     name = root.stem if root.is_file() else root.name
 
     draft = (detect_gpt_sovits(sc, base) or detect_diffusers(sc, base, settings) or detect_gguf(sc, base)
-             or None)
+             or detect_comfyui(sc, base) or detect_ollama(sc, base) or detect_minimind(sc, base) or None)
     if draft is None:
         hf = detect_hf(sc, base, settings)
         proj = detect_script_project(sc, base)
@@ -665,6 +1023,17 @@ def detect(path_str: str, settings: Optional[Settings] = None, plugin_detectors:
 
     draft, manifest_name, manifest_notes = apply_manifest(base, draft)
     notes = manifest_notes + notes
+
+    if draft.gradio_only:
+        # A Gradio page has no OpenAI-compatible endpoint: never advertise chat that cannot work.
+        for c in draft.caps:
+            if c.type in ("chat", "vision", "audio_input", "speech_output", "embedding") \
+                    and c.binding.get("protocol", "").startswith("openai") \
+                    and c.source not in ("manifest", "user"):
+                c.enabled = False
+                c.evidence = c.evidence + ["该项目只有 Gradio 界面，没有 OpenAI 兼容接口"]
+        notes.append("该项目只有 Gradio / Streamlit 界面：请使用“原生界面”面板，"
+                     "或在能力里手动配置 API 地址后再启用对话。")
 
     if not draft.launch.cwd:
         draft.launch.cwd = str(base)

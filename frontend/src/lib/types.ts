@@ -21,6 +21,27 @@ export interface CustomField {
   accept?: string;
 }
 
+export interface ActionField {
+  name: string;
+  label?: string;
+  type?: "text" | "textarea" | "number" | "select" | "image" | "file";
+  default?: string | number;
+  options?: string[];
+  required?: boolean;
+  help?: string;
+  placeholder?: string;
+  accept?: string;
+}
+
+/** A sub-feature of one capability, e.g. text-to-video vs first/last-frame. */
+export interface ActionSpec {
+  id: string;
+  label: string;
+  description?: string;
+  fields?: ActionField[];
+  defaults?: Record<string, any>;
+}
+
 export interface Capability {
   type: string;
   enabled: boolean;
@@ -30,6 +51,7 @@ export interface Capability {
   binding: Binding;
   label?: string | null;
   locked?: boolean;
+  actions?: ActionSpec[];
 }
 
 export interface LaunchConfig {
@@ -108,7 +130,7 @@ export interface Catalog {
 
 export interface OutputItem {
   id: string;
-  kind: "image" | "audio";
+  kind: "image" | "audio" | "video";
   model_id: string;
   model_name: string;
   capability: string;
